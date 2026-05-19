@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 import re
 
 pattern = r"\b(?:\d{1,3}\.){3}\d{1,3}\b"
