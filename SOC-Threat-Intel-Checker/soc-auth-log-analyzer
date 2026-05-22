@@ -1,0 +1,93 @@
+"""
+soc_log_hunter.py
+-----------------
+"""
+
+import re
+from collections import defaultdict
+
+#sample logs for testing
+SAMPLE_LOGS = """
+2024-05-01 02:13:44 FAILED LOGIN user=admin src=192.168.1.55
+2024-05-01 02:13:45 FAILED LOGIN user=admin src=192.168.1.55
+2024-05-01 02:13:46 FAILED LOGIN user=admin src=192.168.1.55
+2024-05-01 02:13:47 FAILED LOGIN user=admin src=192.168.1.55
+2024-05-01 02:13:48 FAILED LOGIN user=admin src=192.168.1.55
+2024-05-01 02:13:49 FAILED LOGIN user=admin src=192.168.1.55
+2024-05-01 03:00:01 SUCCESS LOGIN user=admin src=192.168.1.55
+2024-05-01 03:01:10 FAILED LOGIN user=root src=10.0.0.9
+2024-05-01 03:01:11 FAILED LOGIN user=guest src=10.0.0.9
+2024-05-01 03:01:12 FAILED LOGIN user=svc_backup src=10.0.0.9
+2024-05-01 03:01:13 FAILED LOGIN user=admin src=10.0.0.9
+2024-05-01 09:22:00 SUCCESS LOGIN user=jsmith src=172.16.0.5
+2024-05-01 09:25:00 FILE ACCESS user=jsmith file=/etc/shadow
+2024-05-01 09:26:00 FILE ACCESS user=jsmith file=/etc/passwd
+"""
+
+# thresholds
+BRUTE_LIMIT  = 5   # same user, same src
+SPRAY_LIMIT  = 3   # different users, same src
+
+SENSITIVE_FILES = ["/etc/shadow", "/etc/passwd", "id_rsa", ".env", "credentials"]
+
+findings = []
+
+def flag(severity, msg):
+    findings.append((severity, msg))
+    tag = {"HIGH": "🔴", "MED": "🟡", "LOW": "🟢"}.get(severity, "⚪")
+    print(f"  {tag} [{severity}] {msg}")
+
+def run(logs=SAMPLE_LOGS):
+    lines = [l.strip() for l in logs.strip().splitlines() if l.strip()]
+
+    failed      = defaultdict(list)   # src -> [users]
+    success_ips = []
+
+    print("=" * 55)
+    print("  SOC LOG HUNTER — Threat Summary")
+    print("=" * 55)
+    print(f"  Lines parsed: {len(lines)}\n")
+
+    for line in lines:
+        # failed logins
+        if "FAILED LOGIN" in line:
+            user = re.search(r"user=(\S+)", line)
+            src  = re.search(r"src=(\S+)",  line)
+            if user and src:
+                failed[src.group(1)].append(user.group(1))
+
+        # successful logins
+        if "SUCCESS LOGIN" in line:
+            src = re.search(r"src=(\S+)", line)
+            if src:
+                success_ips.append(src.group(1))
+
+        # sensitive file access
+        if "FILE ACCESS" in line:
+            for sf in SENSITIVE_FILES:
+                if sf in line:
+                    user = re.search(r"user=(\S+)", line)
+                    u = user.group(1) if user else "unknown"
+                    flag("HIGH", f"Sensitive file access by '{u}' → {sf}")
+
+    # brute force & spray detection
+    for src, users in failed.items():
+        unique = set(users)
+        if len(users) >= BRUTE_LIMIT and len(unique) == 1:
+            flag("HIGH", f"Brute force from {src} — {len(users)}x failures on '{list(unique)[0]}'")
+            if src in success_ips:
+                flag("HIGH", f"Brute force SUCCESS — {src} eventually logged in!")
+        elif len(unique) >= SPRAY_LIMIT:
+            flag("MED", f"Password spray from {src} — hit {len(unique)} accounts: {', '.join(unique)}")
+
+    if not findings:
+        print("  Nothing suspicious found.")
+
+    print("\n" + "=" * 55)
+    print(f"  Total findings: {len(findings)}")
+    highs = sum(1 for s, _ in findings if s == "HIGH")
+    if highs:
+        print(f"  {highs} HIGH severity — investigate ASAP")
+    print("=" * 55)
+
+run()
